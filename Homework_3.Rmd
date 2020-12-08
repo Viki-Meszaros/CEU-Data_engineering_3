@@ -1,0 +1,510 @@
+---
+title: "Port.hu "
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+```{r, include= F, warning=F, message= F}
+# Clean the environment
+rm(list = ls())
+
+# Load the packages
+library(rvest)
+library(data.table)
+library(tidyverse)
+#install.packages("xtable")
+library(xtable)
+# install.packages("kableExtra")
+library(kableExtra)
+
+# Save my initial URL
+my_url <- 'https://port.hu/lista/top-100-film?source=searchbar_tags'
+
+```
+
+```{r, include= F, message= F, warning= F}
+# check if we have the data on the url
+webpage <- read_html(my_url)
+write_html(webpage, 'Movies.html')
+```
+
+## Get data from Port.hu of the best 100 movies
+I wrote a script which scrapes through the best 100 movies on Port.hu. It downloads the Title, a link for more info, the rank given by Port.hu, the rating on Port.hu and a variable called Category, which contains the Genre, the Length and the Year the film was made.
+After I downloaded the data I did some cleaning. Basically, I divided the Category column to three separate ones as mentioned before. Also from Genre, I created two column, Genre and Country the film was made in.  I changed some data types to numeric. Below you can see the first 10 rows of my initial data frame.
+```{r, echo= F }
+# Create a function which downloads the basic data of the films
+get_one_page <- function(my_url) {  
+  
+  t <- read_html(my_url)
+  
+  # create the boxes
+  boxes <- 
+    t %>% 
+    html_nodes('.item-container')
+  
+  # get the data and create a list of it for each box
+  box_dfs <- lapply(boxes, function(x){
+    tlist <- list()
+    
+    tlist[['Port.hu_rank']] <- 
+      as.numeric(x %>% 
+      html_nodes('.rank')%>%
+      html_text())
+    
+    tlist[['Title']] <- 
+      trimws(x %>% 
+      html_nodes('.title')%>%
+      html_text())
+    
+    tlist[['Link']]  <- 
+      trimws(x%>% 
+      html_nodes('.title')%>%
+      html_attr('href'))
+    
+    tlist[['Port.hu_rating']] <-
+      as.numeric(x %>% 
+      html_nodes('.num')%>%
+      html_text())
+    
+    tlist[['Category']] <-
+      x %>% 
+      html_nodes('.summary')%>%
+      html_text()
+    
+    return(tlist)
+  })
+  
+  # bind the lists of the boxes to one data frame
+  df <- rbindlist(box_dfs, fill = T)
+  return(df)
+}
+
+# Create the inital data frame using my function
+df <- get_one_page(my_url)
+
+# Replace the Category for the observations, where two genre is listed for the films
+df$Category[7] <- "amerikai gengszterfilm, 175 perc, 1972"
+df$Category[16] <- "olasz-amerikai akció-vígjáték, 102 perc, 1981"
+df$Category[78] <- "amerikai gengszterfilm, 200 perc, 1974"
+
+# Separate the Category into three separate variables (Genre, Length of the film and Year)
+df <- separate(df, Category, ",", into = c("Genre", "Length", "Year" ) )
+
+# Clean Length with deleting "perc" and only leaving the number
+df$Length <- as.numeric(gsub(" perc", "", df$Length))
+
+# Change year to numeric
+df$Year <- as.numeric(df$Year)
+
+# Create a new column with the country the film was made in
+df$Country <- sapply(strsplit(df$Genre, split = ' ', fixed = T), "[[",1) 
+
+# Clean genre, only keep the actual genre without the countries
+get_genre <- function(s) {
+  pieces <- strsplit(s, split = " ", fixed = T)[[1]]
+  return(paste(pieces[2:length(pieces)], collapse = " "))
+}
+
+df$Genre <- as.character(sapply(df$Genre, get_genre))
+
+# Show first 10 observation of my initial data frame
+df %>%
+  head(10) %>% 
+  kable("html") %>%
+  kable_paper("hover", font_size = 10, full_width = T) %>% 
+  column_spec(8, width = "30em")
+```
+
+## Extra scraping
+After I had the initial data frame I decided to scrape additional data from the site of each separate film in the table. For this I wrote functions which open the page for each film and downloads the English title, the description and the link for the reviews of the given film.
+Below you can see the first 10 rows of the extended version of the data frame with the additional three variables.
+```{r, echo= F, warning= F, message= F}
+# Get the English titles (I did not wanted to translate these to English, as in several cases, the translation of the title would not match the actual English title )
+get_english_title <- function(t_link) {
+  t <- read_html(paste0("https://port.hu", t_link))
+  title <- trimws(t %>% html_nodes('small') %>% html_text())
+  if (length(title)== 0) {
+    title <- ''
+  }
+  return(title)
+}
+
+df$Title_eng <- ''
+
+for(i in 1:nrow(df)){
+  t_title <- get_english_title(df$Link[i])
+  if (t_title == '') {
+    df$Title_eng[i] <- df$Title[i]
+  } else {
+  df$Title_eng[i] <- t_title
+  }
+}
+rm(t_title)
+
+# Scrape the description for all the films from the website
+get_Description <- function(t_link) {
+  t <- read_html(paste0("https://port.hu", t_link))
+  return(trimws(paste0(t %>% html_nodes('.description article') %>% html_text(), collapse = ' ')))
+}
+
+df$Description <- ""
+
+for(i in 1:nrow(df)){
+  df$Description[i] <- get_Description(df$Link[i])
+}
+
+# Tidy the descriptions, get rid of /" signs within it
+df$Description <- gsub('\"', '', df$Description, fixed = T)
+
+# Scrape the links to the reviews
+get_rev_link <- function(t_link) {
+  t <- read_html(paste0("https://port.hu", t_link))
+  return((t %>% html_nodes('#all-comments-btn') %>% html_attr('href')))
+}
+
+df$Rev_link <- ""
+
+for(i in 1:nrow(df)){
+  df$Rev_link[i] <- get_rev_link(df$Link[i])
+}
+
+# Show the first 10 observations of the extended table
+df %>%
+  head(10) %>% 
+  kable("html") %>%
+  kable_paper("hover", font_size = 10, full_width = T) %>% 
+  column_spec(8, width = "30em")
+```
+
+
+
+```{r, include= F, message= F, warning= F}
+#Install Amazon Translate
+install.packages("aws.translate", repos = c(getOption("repos"), "http://cloudyr.github.io/drat"))
+
+# Set up AWS access
+keyTable <- read.csv("accessKeys.csv", header = T) # accessKeys.csv == the CSV downloaded from AWS containing your Acces & Secret keys
+AWS_ACCESS_KEY_ID <- as.character(keyTable$Access.key.ID)
+AWS_SECRET_ACCESS_KEY <- as.character(keyTable$Secret.access.key)
+
+#activate
+Sys.setenv("AWS_ACCESS_KEY_ID" = AWS_ACCESS_KEY_ID,
+           "AWS_SECRET_ACCESS_KEY" = AWS_SECRET_ACCESS_KEY,
+           "AWS_DEFAULT_REGION" = "eu-west-1") 
+
+# load translate
+library("aws.translate")
+```
+
+## Final table of top 100 movies
+After getting all the data of the films I wanted, the only remaining problem I had was that except numeric and data values each text was in hungarian, so needed to translate these to English as the next step. Country, Genre and the Description were needed to be translated.
+I created a new table (summ) which only included necessary information. In the table the user can read a short description of all the films, look and the year and country they were made, as well as the length, genre and the rating it achieved on port.hu, all of these in English! 
+```{r, echo= F}
+
+summ <- select(df, Port.hu_rank, Title_eng, Port.hu_rating, Year, Length)
+
+
+for (i in 1:nrow(df)) {
+  summ$Country[i] <- translate(df$Country[i], from = "hu", to = "en")
+  summ$Genre[i] <- translate(df$Genre[i], from = "hu", to = "en")
+  summ$Description[i] <- translate(df$Description[i], from = "hu", to = "en")
+  
+  # df$Eng_tit[i] <- translate(df$Title[i], from = "hu", to = "en") # You can check hoe the translated titles would look like
+}
+
+summ$Rev_link <- df$Rev_link
+
+# In Genre delete film
+summ$Genre <- gsub("film", "", summ$Genre)
+
+summ %>%
+  select(-Rev_link) %>% 
+  kable("html") %>%
+  kable_paper("hover", font_size = 10, full_width = T) %>% 
+  column_spec(8, width = "30em")
+
+write.csv( summ, "All_info.csv" )
+saveRDS( summ, 'All_info.rds')
+```
+
+# Create a plot(s)
+Plot the distributions of films based on Genre, Rating, Year and Country
+
+```{r, warning= F, message= F, echo= F}
+summ %>% 
+  group_by(Genre) %>% 
+  summarise("Number_of_films" = n()) %>% 
+  arrange(-Number_of_films) %>% 
+  head(10) %>% 
+ggplot(aes(x = reorder(Genre, -Number_of_films), y = Number_of_films)) +
+  geom_col( fill = "green4") +
+  theme_classic() +
+  labs(title = "Number of films in the top 10 Genre", x = "Genre", y = "Number of films")
+```
+```{r, warning= F, message= F, echo= F}
+summ %>% 
+  group_by(Country) %>% 
+  summarise("Number_of_films" = n()) %>% 
+  arrange(-Number_of_films) %>% 
+  head( 10 ) %>% 
+ggplot(aes(x = reorder(Country, -Number_of_films), y = Number_of_films)) +
+  geom_col( fill = "orangered4") +
+  theme_classic() +
+  labs(title = "Number of films in the top 10 Countries", x = "Country", y = "Number of films") 
+  
+```
+
+```{r, warning= F, message= F, echo= F}
+summ %>% 
+ggplot( aes(x = Port.hu_rating)) +
+  geom_histogram( bins = 20, fill = "deepskyblue4") +
+  theme_classic() +
+  labs(title = "Port.hu Rating of the films", x = "Port.hu rating", y = "Number of films") 
+  
+```
+
+```{r, warning= F, message= F, echo= F}
+summ %>% 
+ggplot( aes(x = Year)) +
+  geom_histogram( bins = 20, fill = "deeppink4") +
+  theme_classic() +
+  labs(title = "Years the films were made", x = "Year", y = "Number of films") 
+  
+```
+
+
+## Download reviews for a chosen film
+Based on the summary table in English the user have the opportunity to choose a film they are interested in.
+I created a function which asks the user, for which film they want to get more info. They have to plug in the Port.hu rank number of the chosen film, and the function will download the comments for that film (I set 1000 comments as a default, but it can be altered). After this I translated the reviews to English.
+I selected the 4th ranked film "The Notebook" for further analyses.
+```{r, echo= F}
+# Get input from user, for which film they want to get the reviews
+film <- as.numeric(readline(prompt = "Please plug in the Port.hu rank (number between 1-100) of the film for which you would like to get more info: "))
+
+# Create function which gets the reviews
+get_reviews <- function(my_url) {  
+  
+  t <- read_html(my_url)
+  
+  # create the boxes
+  boxes <- 
+    t %>% 
+    html_nodes('#w2 .comments')
+  
+  # get the data and create a list of it for each box
+  box_dfs <- lapply(boxes, function(x){
+    tlist <- list()
+    
+    tlist[['Reviews']] <- 
+      trimws(paste0(x %>% 
+      html_nodes('.message-text')%>%
+      html_text(), collapse = " "))
+    
+      return(tlist)
+  })
+  
+  # bind the lists of the boxes to one data frame
+  reviews <- rbindlist(box_dfs, fill = T)
+  return(reviews)
+}
+
+# As one one page there are 100 comments, I created a function which downloads more pages ( 10 as default, but it can be changed)
+get_all_rev <- function(num_of_reviews=1000) {
+  pages <- paste0("https://port.hu", summ$Rev_link[film], "?sort=-date&per-page=100&page=", 1:(num_of_reviews/100))
+  ret_df <- rbindlist(lapply(pages, get_reviews))
+  return(ret_df)
+}
+
+# Create reviews table with the 1000 comments on Port.hu for the choosen film
+reviews <- get_all_rev()
+reviews$Reviews <- gsub('***', '', reviews$Reviews, fixed = T)
+
+# I translated the reviews as well
+for (i in 1:nrow(reviews)) {
+  reviews$Reviews[19] <- translate(strtrim(reviews$Reviews[19], 4900), from = "hu", to = "en")
+}
+
+# Save the English reviews as csv and rds as well
+write.csv( reviews, "Reviews.csv" )
+saveRDS(reviews, 'Reviews.rds')
+
+# Show first 10 reviews
+reviews %>%
+  head(10)
+```
+
+# Length of reviews
+Plot the number of characters in each review. (Based on this we can estimate the price Amazon would charge for the translations.)
+```{r, echo= F, warning= F, message= F}
+reviews$Character <- nchar(reviews$Reviews)
+
+reviews %>% 
+ggplot(aes(x = reviews$Character)) +
+  geom_histogram(fill = "deepskyblue4")+
+  theme_classic() +
+  labs(title = "Length of reviews", x = "Number of characters", y = "Number of comments")
+```
+
+## Select reviews
+Delete the reviews which have 10 or less words in them, as usually they do not provide sufficient information, is not detailed enough to learn more about a film. I creted a new table which only contains the reviews which are longer than 10 words.
+```{r, message= F, echo= F, warning= F, include= F}
+good <- NULL
+short <- NULL
+
+for (i in 1:nrow(reviews)) {
+  if (sapply(strsplit(reviews$Reviews[i], " "), length) < 10) {
+    short <- c(short, reviews[i])
+  } else {
+    good <- c(good, reviews[i])  
+  }
+}
+
+# Create a data frame from the useful reviews
+good_reviews <- data.frame('Reviews' = as.character(unlist(good)))
+```
+
+
+```{r, include= F, message= F, warning= F}
+#Install Amazon Comprehend
+install.packages("aws.comprehend", repos = c(cloudyr = "http://cloudyr.github.io/drat", getOption("repos")))
+
+# Set up AWS access
+keyTable <- read.csv("accessKeys.csv", header = T) # accessKeys.csv == the CSV downloaded from AWS containing your Acces & Secret keys
+AWS_ACCESS_KEY_ID <- as.character(keyTable$Access.key.ID)
+AWS_SECRET_ACCESS_KEY <- as.character(keyTable$Secret.access.key)
+
+#activate
+Sys.setenv("AWS_ACCESS_KEY_ID" = AWS_ACCESS_KEY_ID,
+           "AWS_SECRET_ACCESS_KEY" = AWS_SECRET_ACCESS_KEY,
+           "AWS_DEFAULT_REGION" = "eu-west-1") 
+
+# load comprehend
+library("aws.comprehend")
+```
+
+## Detect the language
+I used amazon comprehend first here, to detect the language of each reviews and put the results in a new table called sentiment. The aim of this is to see if all the translations ran successfully, and from this we will also be able to detect some reviews that  amazon was not able the translate completely. This can be due to mistyped words or some other potential user specific words or styles. (For example: someone uses one letter more in a word like 'it was reeeeealy gooood', which won't be translated. There can be special characters as well, which Amazon cannot handle.)
+```{r, warning= F, message= F, include= F}
+sentiment <- good_reviews
+
+for (i in 1:nrow(good_reviews)) {
+  t <- detect_language(good_reviews$Reviews[i])
+  sentiment$Language[i] <- t[[2]]
+  sentiment$Language_score[i] <- t[[3]]
+}
+```
+
+## Sentiment detection 
+Detect the sentiment of the comments to find the most positive and negative ones. I saved the scores fro Mixed, Negative, Neutral and Positive as well as the overall sentiment detected by Amazon nezt to each review in a table.
+```{r, echo= F, warning= F, message= F}
+# Create new columns for the sentiment scores
+sentiment$Sentiment <- ""
+sentiment$Mixed <- ""
+sentiment$Negative <- ""
+sentiment$Neutral <- ""
+sentiment$Positive <- ""
+
+# run the sentiment detection for the reviews and include the results to the table 
+for (i in 1:nrow(sentiment)) {
+  t <- detect_sentiment(sentiment$Reviews[i])
+  sentiment$Sentiment[i] <- t[[2]]
+  sentiment$Mixed[i] <- t[[3]]
+  sentiment$Negative[i] <- t[[4]]
+  sentiment$Neutral[i] <- t[[5]]
+  sentiment$Positive[i] <- t[[6]]
+}
+
+# round the values we got and transform them to numeric
+sentiment$Mixed <- round(as.numeric(sentiment$Mixed), 5)
+sentiment$Negative <- round(as.numeric(sentiment$Negative), 5)
+sentiment$Neutral <- round(as.numeric(sentiment$Neutral), 5)
+sentiment$Positive <- round(as.numeric(sentiment$Positive), 5)
+
+# Save the table as csv and rds files
+write.csv( sentiment, "Sentiment.csv" )
+saveRDS(sentiment, 'Sentiment.rds')
+
+sentiment %>%
+  head(10) %>% 
+  kable("html") %>%
+  kable_paper("hover", font_size = 10, full_width = T) %>% 
+  column_spec(8, width = "30em")
+```
+ 
+
+# Overview on the sentiments
+This graph shows the sentiment of the comments for "The Notebook".
+We can read from it, that most of the comments/reviews were positive about this film, and only around 100 from the 605 were negative. 
+```{r}
+ggplot(sentiment) +
+ aes(x = Sentiment, fill = Sentiment) +
+ geom_bar(show.legend = F) +
+ scale_fill_hue() +
+ theme_classic()
+```
+
+
+## Best and worst reviews
+I decided to print out and also read out the best and the worst reviews that was written on Port.hu for "The notebook".
+```{r, include= F, warning= F, message= F}
+# Install Polly 
+install.packages("aws.polly", repos = c(getOption("repos"), "http://cloudyr.github.io/drat"))
+
+# Install tuneR
+install.packages("tuneR") 
+
+# Set up AWS access
+keyTable <- read.csv("accessKeys.csv", header = T) # accessKeys.csv == the CSV downloaded from AWS containing your Acces & Secret keys
+AWS_ACCESS_KEY_ID <- as.character(keyTable$Access.key.ID)
+AWS_SECRET_ACCESS_KEY <- as.character(keyTable$Secret.access.key)
+
+#activate
+Sys.setenv("AWS_ACCESS_KEY_ID" = AWS_ACCESS_KEY_ID,
+           "AWS_SECRET_ACCESS_KEY" = AWS_SECRET_ACCESS_KEY,
+           "AWS_DEFAULT_REGION" = "eu-west-1")
+
+# load polly
+library("aws.polly")
+
+# list available voices
+list_voices()
+
+library("tuneR")
+
+```
+
+```{r}
+best <- sentiment %>% 
+  arrange(-Positive) %>% 
+  head(1)
+best <- best$Reviews
+
+worst <- sentiment %>% 
+  arrange(-Negative) %>% 
+  head(1)
+worst <- worst$Reviews
+
+vec_best <- synthesize(best, voice = "Kendra")
+
+vec_worst <- synthesize(worst, voice = "Joey")
+```
+
+Best review 
+```{r, echo= F}
+play(vec_best)
+print( best )
+```
+
+Worst review
+```{r, echo= F}
+play(vec_worst)
+print(worst)
+```
+
+
+
+
+
